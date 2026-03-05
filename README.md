@@ -2,33 +2,78 @@
 
 **Intelligent context management for OpenClaw agents.**
 
-Prevents session bloat by automatically monitoring context usage, extracting critical state, and seamlessly resetting sessions before performance degrades.
+Prevents session bloat by monitoring context usage with **dynamic thresholds** (capped percentages), extracting critical state, and orchestrating seamless session resets before performance degrades.
 
 ## The Problem
 
 OpenClaw sessions accumulate context over time, leading to:
-- Slow responses at 80%+ context utilization
-- Unusable agents at 90%+ context
+- Slow responses at high context utilization
+- Unusable agents at critical thresholds
 - `/compact` only trims to ~80% (not a full reset)
 - `/new` unreliable in WhatsApp groups (gateway intercept issues)
-- Manual dashboard deletion is disruptive
+- **One-size-fits-all thresholds fail**: 80k is early for 30k models, late for 256k models
 
 ## The Solution
 
-This skill provides **automatic and manual context flushing**:
+This skill provides **dynamic threshold monitoring** and **manual flush orchestration**:
 
 1. **Monitor** - Track context percentage in real-time
-2. **Extract** - Save active tasks, decisions, and critical context
-3. **Reset** - Clean session break (reliable even in groups)
-4. **Restore** - Seamlessly continue with extracted context
+2. **Calculate** - Apply model-specific thresholds (60%/80% of window, capped at 80k/100k)
+3. **Warn** - Notify at warning threshold
+4. **Extract** - Save active tasks, decisions, and critical context at hard gate
+5. **Prompt** - Tell user to run `/new`
+6. **Restore** - Seamlessly continue with extracted context after reset
 
-## Features
+## Dynamic Thresholds
 
-- **Auto-Trigger**: Suggests flush at configurable threshold (default 85%)
-- **Manual Flush**: `/flush` command for on-demand resets
-- **Smart Extraction**: Only saves what's needed to continue
-- **State Preservation**: Tasks, decisions, and pending items are retained
-- **Group Chat Support**: Works around /new limitations in WhatsApp
+| Level | Calculation | Purpose |
+|-------|-------------|---------|
+| **Warning** | `min(60% of window, 80k tokens)` | Early heads-up |
+| **Hard Gate** | `min(80% of window, 100k tokens)` | Extract + prompt for reset |
+| **Critical** | `min(90% of window, 140k tokens)` | **Degraded mode** + one-tap reset |
+
+### Examples by Agent
+
+| Agent | Model | Window | Warning | Hard Gate | Critical |
+|-------|-------|--------|---------|-----------|----------|
+| Capital | Qwen 3.5 9B | 32k | 19k (60%) | 26k (80%) | 29k (90%) |
+| Sea Cool | MiniMax M2.5 | 200k | 80k (cap) | 100k (cap) | 140k (cap) |
+| Samurai | MiniMax M2.5 | 200k | 80k (cap) | 100k (cap) | 140k (cap) |
+| Blinds | Kimi K2.5 | 256k | 80k (cap) | 100k (cap) | 140k (cap) |
+| Seb Personal | Kimi K2.5 | 256k | 80k (cap) | 100k (cap) | 140k (cap) |
+| Sheet | Qwen 3.5 9B | 32k | 19k (60%) | 26k (80%) |
+| Sandbox | Qwen 3.5 9B | 32k | 19k (60%) | 26k (80%) |
+
+**Why caps?** Large models degrade well before their theoretical limits. 80k/100k/140k keeps them responsive.
+
+## One-Tap Reset (Phone-Friendly)
+
+### Telegram
+Inline button with `/new` callback:
+```
+[🔄 Reset Session]  ← Click to run /new
+```
+
+### WhatsApp
+wa.me link with pre-filled `/new`:
+```
+👉 Tap to reset: https://wa.me/{agent_phone}?text=%2Fnew
+```
+
+**User flow:** Tap link → WhatsApp opens → `/new` pre-filled → Tap send → Session resets
+
+### Config (Per-Agent Phone Numbers)
+
+Add to `~/.openclaw/workspace/agents/{agent}/memory/context-flush-config.json`:
+
+```json
+{
+  "agentPhoneNumbers": {
+    "whatsapp": "+17864224950",
+    "telegram": "@sebclawops_bot"
+  }
+}
+```
 
 ## Installation
 
@@ -40,59 +85,81 @@ Or manually copy to `~/.openclaw/workspace/skills/context-flush/`
 
 ## Usage
 
-### Auto-Flush
+### Auto-Monitoring
 
-The skill monitors your session context. When it hits the threshold (default 85%), you'll see:
+The skill monitors your session context automatically. When thresholds are hit:
 
+**At Warning:**
 ```
-Heads up: Context at 87%. Want me to save our progress and start fresh?
-
-Active tasks:
-- [Task summary]
-
-Key decisions made:
-- [Decision summary]
-
-(yes/no)
+Heads up: Context at 82k tokens (32% of window). Approaching performance threshold.
+Consider running `/new` when convenient.
 ```
 
-### Manual Flush
-
-Trigger anytime:
-- `/flush` - Flush with extraction
-- `/flush --force` - Flush even if below threshold
-- `/flush config` - Show/edit configuration
-
-### Configuration
-
-Edit `~/.openclaw/workspace/agents/{agent}/memory/context-flush-config.json`:
-
-```json
-{
-  "autoTriggerThreshold": 85,
-  "autoTriggerEnabled": true,
-  "backupRetentionDays": 7,
-  "maxBackupsToKeep": 10
-}
+**At Hard Gate:**
 ```
+⚠️ Context at 98k tokens (38% of window). At hard gate for this model.
+
+Saving state to memory/2026-03-05.md...
+✓ State saved.
+
+Ready to reset. Run `/new` and I'll restore from where we left off.
+
+[Telegram: 🔄 Reset Session button]
+[WhatsApp: 👉 Tap to reset: https://wa.me/+17864224950?text=%2Fnew]
+```
+
+**At Critical (Degraded Mode):**
+```
+🚨 Context at 145k tokens (57% of window). CRITICAL.
+
+I can only handle simple commands. Complex tasks require a reset.
+
+State saved to memory/2026-03-05.md.
+
+👉 Tap to reset now: https://wa.me/+17864224950?text=%2Fnew
+
+Or type /new to restore full functionality.
+```
+
+**After `/new`:**
+```
+Session reset detected. Restoring from memory/2026-03-05.md:
+
+You're working on:
+- [Task 1] (in progress)
+- [Task 2] (pending)
+
+Key decisions:
+- [Decision 1]
+- [Decision 2]
+
+Ready to continue?
+```
+
+### Manual Commands
+
+- `/flush` - Trigger state extraction and reset prompt immediately
+- `/flush status` - Show current context usage and model thresholds
+- `/flush config` - Show threshold configuration
 
 ## How It Works
 
-1. **Context Check**: Monitors session status (via `/status` or heartbeat)
-2. **Extraction**: When threshold reached, saves critical info:
+1. **Context Check**: Monitors via `/status` or `session_status` tool
+2. **Threshold Calc**: Applies `min(percentage, cap)` logic based on model window
+3. **State Extraction**: Saves to `memory/YYYY-MM-DD.md` with `context-flush` markers:
    - Active tasks (in progress)
    - Key decisions made
+   - Files in play
    - Pending items
-   - Important context
-3. **Backup**: Writes to `memory/context-flush-backup-YYYY-MM-DD-HHMMSS.md`
-4. **Reset**: Executes session reset (/new or dashboard)
-5. **Restore**: On new session, reads backup and summarizes
+   - Context summary
+4. **User Prompt**: Asks user to run `/new`
+5. **Restoration**: On new session, detects markers and prompts restoration
 
 ## File Structure
 
 ```
 context-flush/
-├── SKILL.md              # Agent instructions (this is the skill)
+├── SKILL.md              # Agent instructions (single-file skill)
 └── README.md             # You're reading it
 ```
 
@@ -112,12 +179,13 @@ All logic is implemented via the agent following the SKILL.md instructions.
 - Group chat resets may need dashboard intervention
 - Backup files are local (not synced)
 - Prevents bloat but doesn't reduce token burn rate
+- Context window detection requires model lookup table
 
 ## Requirements
 
 - OpenClaw 2026.1.0+
-- Agent with heartbeat enabled (for auto-trigger)
-- Write access to `~/.openclaw/workspace/agents/{agent}/memory/`
+- Agent with workspace write access
+- `session_status` tool available (for context monitoring)
 
 ## License
 
@@ -127,9 +195,8 @@ MIT
 
 Albert (@sebclawops - https://github.com/sebclawops)
 
-## Related Issues
+## Version History
 
-This skill addresses community-reported issues:
-- OpenClaw #28233 - Session bloat in long-running agents
-- OpenClaw #10719 - /compact insufficient for true reset
-- OpenClaw #16350 - /new unreliable in WhatsApp groups
+- v1.2.0 - Dynamic thresholds + one-tap reset + degraded mode
+- v1.1.0 - Fixed 80k/100k thresholds
+- v1.0.0 - Initial concept
