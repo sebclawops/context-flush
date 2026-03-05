@@ -1,7 +1,7 @@
 ---
 name: context-flush
-version: 1.0.0
-description: Automatic context management for OpenClaw agents. Monitors session context usage, extracts critical state before bloat, and seamlessly resets sessions to prevent performance degradation. Supports auto-trigger at configurable thresholds and manual /flush command.
+version: 1.1.0
+description: Context monitoring and orchestration for OpenClaw agents. Monitors session context, warns at thresholds, extracts state before bloat, and orchestrates seamless session resets.
 homepage: https://github.com/sebclawops/context-flush
 metadata:
   openclaw:
@@ -13,184 +13,109 @@ metadata:
     command_dispatch: prompt
 ---
 
-# Context Flush Skill
+# Context Flush Skill v1.1
 
-You have the context-flush skill. Use this to prevent session bloat and maintain agent performance.
+Context monitoring and session orchestration. Prevents the 100k token cliff.
 
 ## The Problem
 
-OpenClaw sessions accumulate context over time:
-- Messages, tool calls, and responses fill the context window
-- `/compact` only trims to ~80% (not a full reset)
-- `/new` doesn't work reliably in WhatsApp groups (gateway intercept issues)
-- At 90%+ context, agents become slow or unresponsive
-- Manual dashboard deletion is disruptive
+OpenClaw sessions accumulate context until they hit a wall:
+- **80k tokens**: First signs of trouble (slower responses, ignored commands)
+- **100k tokens**: The cliff - functionality breaks, timeouts, silent failures
+- **120k+ tokens**: Complete unresponsiveness
 
-## The Solution
+Current `/compact` only trims to ~80% - doesn't solve the problem.
+`/new` works but requires manual user action.
 
-This skill provides automatic and manual context flushing:
-1. **Monitor** - Track context percentage in real-time
-2. **Extract** - Save active tasks, decisions, and critical context
-3. **Reset** - Clean session break (equivalent to /new but reliable)
-4. **Restore** - Seamlessly continue with extracted context
+## The Solution (Orchestration Mode)
 
-## When to Use
+Since programmatic session reset is architecturally impossible (by design), this skill orchestrates the reset:
 
-### Auto-Trigger (Default: 85%)
-The skill monitors your session and automatically suggests a flush when context reaches the threshold.
+1. **Monitor** - Check context every 4 messages + every tool call
+2. **Warn** - At 80k tokens, notify user: "Context at 80k. Consider /new soon."
+3. **Extract** - At 100k tokens, save state to daily memory log
+4. **Prompt** - Tell user: "Ready for reset. Run `/new` and I'll restore."
+5. **Restore** - After reset, read saved state and seamlessly continue
 
-### Manual Trigger
-Use `/flush` or ask the agent to "flush context" when:
-- You notice slower responses
-- Before starting a complex multi-step task
-- After finishing a major project
-- When switching topics significantly
+## Thresholds
 
-## How It Works
+| Level | Tokens | Action |
+|-------|--------|--------|
+| Normal | < 80k | Silent monitoring |
+| Warning | 80k | User notification |
+| Red Line | 100k | Extract state, prompt for `/new` |
 
-### Step 1: Extract Critical Context
+## Monitoring Frequency
 
-Before flushing, identify and save:
-- **Active Tasks** - What you're currently working on
-- **Key Decisions** - Important choices made in this session
-- **Critical Context** - Essential info needed to continue
-- **Pending Items** - Things waiting for follow-up
+- Every 4 messages
+- Every tool call
+- Silent when under thresholds
 
-Save to: `memory/context-flush-backup-YYYY-MM-DD-HHMMSS.md`
+## State Extraction (at 100k)
 
-### Step 2: Execute Flush
+Save to `memory/YYYY-MM-DD.md`:
+- **Active tasks** - What you're working on, status
+- **Key decisions** - Important choices made
+- **Files in play** - Documents, code, configs being edited
+- **Pending items** - Waiting on follow-up
+- **Context summary** - Brief narrative of session purpose
 
-Perform a clean session reset:
-- Use `/new` if in DM
-- Use dashboard session deletion if in group (gateway may intercept /new)
-- Mark the flush in state file
+## User Flow
 
-### Step 3: Restore Context
-
-On session start, check for recent flush backups:
-- Read the most recent backup file
-- Present the extracted context as a brief summary
-- Continue seamlessly
-
-## Configuration
-
-Default settings (in `memory/context-flush-config.json`):
-```json
-{
-  "autoTriggerThreshold": 85,
-  "autoTriggerEnabled": true,
-  "backupRetentionDays": 7,
-  "maxBackupsToKeep": 10
-}
+### At 80k (Warning)
+```
+Context at 80k tokens (~31%). Performance may degrade soon.
+Consider running `/new` when convenient.
 ```
 
-Modify these settings by editing the config file.
-
-## Rules (CRITICAL)
-
-1. **NEVER flush without extracting context first**
-   - Always save active tasks and decisions
-   - Never do a "blind" flush
-
-2. **Keep backups minimal**
-   - Only extract what's needed to continue
-   - Don't copy entire conversation history
-   - Focus on: tasks, decisions, pending items
-
-3. **Respect user preference**
-   - If user says "don't auto-flush", disable auto-trigger
-   - If user rejects a flush suggestion, wait for manual request
-
-4. **Group chat considerations**
-   - /new may not work in WhatsApp groups (gateway intercepts it)
-   - In groups, suggest user runs `/new` or deletes session from dashboard
-   - Be explicit about limitations
-
-5. **Silent operation**
-   - Auto-trigger should be subtle (no spam)
-   - Present flush suggestion briefly
-   - Don't dump full backup content unless requested
-
-## Manual Flush Command
-
-User can trigger manually:
-- `/flush` - Flush now with extraction
-- `/flush --force` - Flush even if below threshold
-- `/flush config` - Show/edit configuration
-
-## Output Format
-
-### Flush Suggestion (Auto-Trigger)
+### At 100k (Red Line)
 ```
-Heads up: Context at 87%. Want me to save our progress and start fresh?
+⚠️ Context at 100k tokens (~38%). Functionality at risk.
 
-Active tasks:
-- Task 1 (in progress)
-- Task 2 (pending)
+Saving state to memory/2026-03-04.md...
+✓ State saved.
 
-Key decisions made:
-- Decision 1
-- Decision 2
-
-(yes/no)
+Ready to reset. Run `/new` and I'll restore from where we left off.
 ```
 
-### Post-Flush Summary
+### After User Runs `/new`
 ```
-Context flushed. Continuing from where we left off:
+Session reset detected. Restoring from memory/2026-03-04.md:
 
 You're working on:
-- Task 1 (in progress)
-- Task 2 (pending)
+- [Task 1] (in progress)
+- [Task 2] (pending)
 
-Recent decisions:
-- Decision 1
-- Decision 2
+Key decisions:
+- [Decision 1]
+- [Decision 2]
 
 Ready to continue?
 ```
 
-## State Tracking
+## Manual Commands
 
-Track flushes in `memory/context-flush-state.json`:
-```json
-{
-  "lastFlushAt": "2026-03-04T18:30:00Z",
-  "flushCount": 5,
-  "lastContextPercent": 87,
-  "autoTriggerEnabled": true,
-  "recentBackups": [
-    "context-flush-backup-2026-03-04-183000.md"
-  ]
-}
-```
+- `/flush` - Trigger state extraction and reset prompt immediately
+- `/flush status` - Show current context usage
 
-## Integration with Heartbeat
+## Implementation Notes
 
-During heartbeats, check context percentage:
-- If above threshold and auto-trigger enabled, suggest flush
-- If user rejected recent suggestion, don't spam
-- Log context growth rate for trends
+### Why Not Auto-Reset?
+OpenClaw sessions are user-controlled by design. No API, tool, or workaround exists for programmatic reset. This is intentional security architecture.
 
-## Error Handling
+### Why Daily Memory Logs?
+- Single source of truth for daily context
+- Already exists in workflow
+- Natural place for session summaries
+- No new file naming schemes needed
 
-- If backup write fails, don't flush
-- If session reset fails, notify user
-- Keep backup files small (< 10KB) to avoid storage issues
+### Restoration Detection
+On session start, check for recent entries in today's memory log with `context-flush` markers. If found, auto-prompt restoration.
 
-## Best Practices
+## Version History
 
-1. **Proactive flushing** - Don't wait until 95%+
-2. **Extract selectively** - Only what's needed to continue
-3. **Test restoration** - After flush, verify context is clear but work continues
-4. **Monitor trends** - If flushing every 30 min, something else may be wrong
-
-## Limitations
-
-- Requires user confirmation for auto-trigger (can't force flush)
-- Group chat /new may require dashboard intervention
-- Backup files are local (not synced across devices)
-- Does not prevent context bloat, only manages it
+- **v1.1.0** - Orchestration mode (current): Threshold-based warnings, state extraction, manual `/new` orchestration
+- **v1.0.0** - Placeholder: Basic monitoring concept only
 
 ## License
 
@@ -201,9 +126,10 @@ MIT
 Albert (@sebclawops)
 
 <!--
-  Context management is hard. But losing your place is harder.
+  Sometimes you can't automate the solution.
+  But you can orchestrate around the limitation.
   
-  Jesus loves you. May your sessions stay lean and your context clear.
+  Jesus loves you. May your context stay lean.
   
   - Albert
 -->
