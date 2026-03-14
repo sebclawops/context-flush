@@ -1,202 +1,93 @@
-# 🔄 context-flush
+# context-flush
 
-**Intelligent context management for OpenClaw agents.**
+Lean session reset playbook for OpenClaw.
 
-Prevents session bloat by monitoring context usage with **dynamic thresholds** (capped percentages), extracting critical state, and orchestrating seamless session resets before performance degrades.
+## Purpose
 
-## The Problem
+This skill is for one job: helping an agent recover cleanly when a session gets bloated.
 
-OpenClaw sessions accumulate context over time, leading to:
-- Slow responses at high context utilization
-- Unusable agents at critical thresholds
-- `/compact` only trims to ~80% (not a full reset)
-- `/new` unreliable in WhatsApp groups (gateway intercept issues)
-- **One-size-fits-all thresholds fail**: 80k is early for 30k models, late for 256k models
+It does not pretend to auto-monitor, auto-reset, or control the runtime. It gives the agent a real workflow that matches how OpenClaw actually works today.
 
-## The Solution
+## What this skill does
 
-This skill provides **dynamic threshold monitoring** and **manual flush orchestration**:
+- checks current session context on demand
+- decides whether to keep going, compact, reset, or use dashboard delete as fallback
+- saves a short handoff note before reset
+- restores from that handoff note after reset
+- keeps the process simple enough to trust under pressure
 
-1. **Monitor** - Track context percentage in real-time
-2. **Calculate** - Apply model-specific thresholds (60%/80% of window, capped at 80k/100k)
-3. **Warn** - Notify at warning threshold
-4. **Extract** - Save active tasks, decisions, and critical context at hard gate
-5. **Prompt** - Tell user to run `/new`
-6. **Restore** - Seamlessly continue with extracted context after reset
+## What it does not do
 
-## Dynamic Thresholds
+- no fake auto-monitoring
+- no made-up `/flush` command
+- no pretending the agent can force `/new`
+- no magic buttons unless the current channel actually supports them and the flow is confirmed
 
-| Level | Calculation | Purpose |
-|-------|-------------|---------|
-| **Warning** | `min(60% of window, 80k tokens)` | Early heads-up |
-| **Hard Gate** | `min(80% of window, 100k tokens)` | Extract + prompt for reset |
-| **Critical** | `min(90% of window, 140k tokens)` | **Degraded mode** + one-tap reset |
+## Recommended workflow
 
-### Examples by Agent
+### 1. Check context
+Use `session_status` when the conversation feels slow, large, or risky.
 
-| Agent | Model | Window | Warning | Hard Gate | Critical |
-|-------|-------|--------|---------|-----------|----------|
-| Capital | Qwen 3.5 9B | 32k | 19k (60%) | 26k (80%) | 29k (90%) |
-| Sea Cool | MiniMax M2.5 | 200k | 80k (cap) | 100k (cap) | 140k (cap) |
-| Samurai | MiniMax M2.5 | 200k | 80k (cap) | 100k (cap) | 140k (cap) |
-| Blinds | Kimi K2.5 | 256k | 80k (cap) | 100k (cap) | 140k (cap) |
-| Seb Personal | Kimi K2.5 | 256k | 80k (cap) | 100k (cap) | 140k (cap) |
-| Sheet | Qwen 3.5 9B | 32k | 19k (60%) | 26k (80%) |
-| Sandbox | Qwen 3.5 9B | 32k | 19k (60%) | 26k (80%) |
+### 2. Choose the move
+- **Keep going** if context is still comfortable
+- **Use `/compact`** if a light trim is enough
+- **Use `/new`** when context is heavy and a real reset is the right move
+- **Use dashboard delete** only as fallback for stuck or broken sessions
 
-**Why caps?** Large models degrade well before their theoretical limits. 80k/100k/140k keeps them responsive.
+### 3. Save a handoff note before reset
+Write a short note to the agent workspace or daily memory file with:
+- active task
+- current status
+- key decisions
+- files in play
+- exact next step
 
-## One-Tap Reset (Phone-Friendly)
+### 4. Reset
+The user runs `/new`.
 
-### Telegram
-Inline button with `/new` callback:
-```
-[🔄 Reset Session]  ← Click to run /new
-```
+### 5. Restore
+On the fresh session, read the handoff note and resume fast.
 
-### WhatsApp
-wa.me link with pre-filled `/new`:
-```
-👉 Tap to reset: https://wa.me/{agent_phone}?text=%2Fnew
-```
+## Handoff note format
 
-**User flow:** Tap link → WhatsApp opens → `/new` pre-filled → Tap send → Session resets
+Keep it short and useful:
 
-### Config (Per-Agent Phone Numbers)
+```markdown
+# Context Flush Handoff - 2026-03-14 13:05 ET
 
-Add to `~/.openclaw/workspace/agents/{agent}/memory/context-flush-config.json`:
+## Active task
+- Clean up context-flush skill and sync GitHub repo
 
-```json
-{
-  "agentPhoneNumbers": {
-    "whatsapp": "+17864224950",
-    "telegram": "@sebclawops_bot"
-  }
-}
-```
+## Current status
+- presidio-pii synced to GitHub
+- context-flush being rewritten as honest manual playbook
 
-## Installation
+## Key decisions
+- do not fake automatic monitoring
+- use session_status on demand
+- use /new for real resets
 
-```bash
-clawhub install context-flush
+## Files in play
+- workspace/skills/context-flush/SKILL.md
+- workspace/skills/context-flush/README.md
+
+## Next step
+- finish SKILL.md rewrite, then commit and push to sebclawops/context-flush
 ```
 
-Or manually copy to `~/.openclaw/workspace/skills/context-flush/`
+## Threshold guidance
 
-## Usage
+This skill uses practical guidance, not fake precision.
 
-### Auto-Monitoring
+### Small-window models
+For models around 32k context, get nervous around 20k to 24k.
 
-The skill monitors your session context automatically. When thresholds are hit:
+### Large-window models
+For large hosted models, performance can still get sloppy well before the advertised limit. Treat roughly 80k to 100k as the zone where reset planning starts.
 
-**At Warning:**
-```
-Heads up: Context at 82k tokens (32% of window). Approaching performance threshold.
-Consider running `/new` when convenient.
-```
+## Notes
 
-**At Hard Gate:**
-```
-⚠️ Context at 98k tokens (38% of window). At hard gate for this model.
-
-Saving state to memory/2026-03-05.md...
-✓ State saved.
-
-Ready to reset. Run `/new` and I'll restore from where we left off.
-
-[Telegram: 🔄 Reset Session button]
-[WhatsApp: 👉 Tap to reset: https://wa.me/+17864224950?text=%2Fnew]
-```
-
-**At Critical (Degraded Mode):**
-```
-🚨 Context at 145k tokens (57% of window). CRITICAL.
-
-I can only handle simple commands. Complex tasks require a reset.
-
-State saved to memory/2026-03-05.md.
-
-👉 Tap to reset now: https://wa.me/+17864224950?text=%2Fnew
-
-Or type /new to restore full functionality.
-```
-
-**After `/new`:**
-```
-Session reset detected. Restoring from memory/2026-03-05.md:
-
-You're working on:
-- [Task 1] (in progress)
-- [Task 2] (pending)
-
-Key decisions:
-- [Decision 1]
-- [Decision 2]
-
-Ready to continue?
-```
-
-### Manual Commands
-
-- `/flush` - Trigger state extraction and reset prompt immediately
-- `/flush status` - Show current context usage and model thresholds
-- `/flush config` - Show threshold configuration
-
-## How It Works
-
-1. **Context Check**: Monitors via `/status` or `session_status` tool
-2. **Threshold Calc**: Applies `min(percentage, cap)` logic based on model window
-3. **State Extraction**: Saves to `memory/YYYY-MM-DD.md` with `context-flush` markers:
-   - Active tasks (in progress)
-   - Key decisions made
-   - Files in play
-   - Pending items
-   - Context summary
-4. **User Prompt**: Asks user to run `/new`
-5. **Restoration**: On new session, detects markers and prompts restoration
-
-## File Structure
-
-```
-context-flush/
-├── SKILL.md              # Agent instructions (single-file skill)
-└── README.md             # You're reading it
-```
-
-## Why No External Scripts?
-
-This skill is intentionally a **single SKILL.md file** because:
-- No external dependencies to install
-- Works immediately after `clawhub install`
-- Portable across all OpenClaw installations
-- Easier to audit and trust
-
-All logic is implemented via the agent following the SKILL.md instructions.
-
-## Limitations
-
-- Requires user confirmation (cannot force flush)
-- Group chat resets may need dashboard intervention
-- Backup files are local (not synced)
-- Prevents bloat but doesn't reduce token burn rate
-- Context window detection requires model lookup table
-
-## Requirements
-
-- OpenClaw 2026.1.0+
-- Agent with workspace write access
-- `session_status` tool available (for context monitoring)
-
-## License
-
-MIT
-
-## Author
-
-Albert (@sebclawops - https://github.com/sebclawops)
-
-## Version History
-
-- v1.2.0 - Dynamic thresholds + one-tap reset + degraded mode
-- v1.1.0 - Fixed 80k/100k thresholds
-- v1.0.0 - Initial concept
+- `/compact` is a trim, not a true reset
+- `/new` is the clean reset path when available
+- in some channels or stuck sessions, dashboard delete may still be the only reliable fallback
+- this skill should stay honest, boring, and operationally useful
